@@ -1,0 +1,25 @@
+{
+    "name": "zephyrphp/cache",
+    "description": "Cache module for ZephyrPHP - Multiple cache drivers support",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.1",
+        "zephyrphp/framework": "^0.1|^0.2|^0.3|^1.0"
+    },
+    "suggest": {
+        "ext-redis": "Required for Redis cache driver",
+        "ext-apcu": "Required for APCu cache driver"
+    },
+    "autoload": {
+        "psr-4": {
+            "ZephyrPHP\\Cache\\": "src/"
+        }
+    },
+    "extra": {
+        "zephyr": {
+            "module": "cache",
+            "config": "config/cache.php"
+        }
+    }
+}
