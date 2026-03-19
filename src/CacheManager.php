@@ -54,18 +54,47 @@ class CacheManager implements CacheInterface
     }
 
     /**
+     * Validate a cache key
+     */
+    private function validateKey(string $key): void
+    {
+        if ($key === '') {
+            throw new \InvalidArgumentException('Cache key must not be empty.');
+        }
+        if (strlen($key) > 250) {
+            throw new \InvalidArgumentException('Cache key must not exceed 250 characters.');
+        }
+        if (preg_match('/[\x00-\x1f\x7f{}()\/@\\\\]/', $key)) {
+            throw new \InvalidArgumentException("Cache key contains invalid characters: {$key}");
+        }
+    }
+
+    /**
      * Create a cache driver instance
      */
     private function createDriver(string $driver): CacheInterface
     {
         $storeConfig = $this->config['stores'][$driver] ?? [];
 
+        if ($driver === 'redis' || $driver === 'apcu') {
+            try {
+                return match ($driver) {
+                    'redis' => new RedisCacheDriver($storeConfig),
+                    'apcu' => new ApcuCacheDriver($storeConfig),
+                };
+            } catch (\Throwable $e) {
+                // Fall back to file cache if Redis/APCu fails to initialize
+                $fileConfig = $this->config['stores']['file'] ?? [];
+                return new FileCacheDriver($fileConfig);
+            }
+        }
+
         return match ($driver) {
             'file' => new FileCacheDriver($storeConfig),
             'redis' => new RedisCacheDriver($storeConfig),
             'apcu' => new ApcuCacheDriver($storeConfig),
             'array' => new ArrayCacheDriver(),
-            default => new FileCacheDriver($storeConfig),
+            default => throw new \InvalidArgumentException("Unsupported cache driver: {$driver}"),
         };
     }
 
@@ -74,6 +103,7 @@ class CacheManager implements CacheInterface
      */
     public function get(string $key, mixed $default = null): mixed
     {
+        $this->validateKey($key);
         return $this->store()->get($key, $default);
     }
 
@@ -82,6 +112,7 @@ class CacheManager implements CacheInterface
      */
     public function set(string $key, mixed $value, int $ttl = 0): bool
     {
+        $this->validateKey($key);
         return $this->store()->set($key, $value, $ttl);
     }
 
@@ -90,6 +121,7 @@ class CacheManager implements CacheInterface
      */
     public function delete(string $key): bool
     {
+        $this->validateKey($key);
         return $this->store()->delete($key);
     }
 
@@ -106,6 +138,7 @@ class CacheManager implements CacheInterface
      */
     public function has(string $key): bool
     {
+        $this->validateKey($key);
         return $this->store()->has($key);
     }
 
@@ -114,6 +147,9 @@ class CacheManager implements CacheInterface
      */
     public function getMultiple(array $keys, mixed $default = null): array
     {
+        foreach ($keys as $key) {
+            $this->validateKey($key);
+        }
         return $this->store()->getMultiple($keys, $default);
     }
 
@@ -122,6 +158,9 @@ class CacheManager implements CacheInterface
      */
     public function setMultiple(array $values, int $ttl = 0): bool
     {
+        foreach (array_keys($values) as $key) {
+            $this->validateKey((string) $key);
+        }
         return $this->store()->setMultiple($values, $ttl);
     }
 
@@ -130,6 +169,9 @@ class CacheManager implements CacheInterface
      */
     public function deleteMultiple(array $keys): bool
     {
+        foreach ($keys as $key) {
+            $this->validateKey($key);
+        }
         return $this->store()->deleteMultiple($keys);
     }
 
@@ -143,14 +185,27 @@ class CacheManager implements CacheInterface
      */
     public function remember(string $key, int $ttl, callable $callback): mixed
     {
-        $value = $this->get($key);
+        $this->validateKey($key);
 
+        $value = $this->get($key);
         if ($value !== null) {
             return $value;
         }
 
+        // Use a lock key to mitigate cache stampede (thundering herd)
+        $lockKey = $key . ':_lock';
+        if ($this->has($lockKey)) {
+            usleep(50000); // 50ms wait for another process to finish
+            $value = $this->get($key);
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        $this->set($lockKey, '1', 30);
         $value = $callback();
         $this->set($key, $value, $ttl);
+        $this->delete($lockKey);
 
         return $value;
     }
@@ -164,6 +219,7 @@ class CacheManager implements CacheInterface
      */
     public function rememberForever(string $key, callable $callback): mixed
     {
+        $this->validateKey($key);
         return $this->remember($key, 0, $callback);
     }
 
@@ -176,8 +232,9 @@ class CacheManager implements CacheInterface
      */
     public function pull(string $key, mixed $default = null): mixed
     {
-        $value = $this->get($key, $default);
-        $this->delete($key);
+        $this->validateKey($key);
+        $value = $this->store()->get($key, $default);
+        $this->store()->delete($key);
         return $value;
     }
 
@@ -188,18 +245,10 @@ class CacheManager implements CacheInterface
      * @param int $value Amount to increment
      * @return int|bool New value or false on failure
      */
-    public function increment(string $key, int $value = 1): int|bool
+    public function increment(string $key, int $value = 1): int|false
     {
-        $current = $this->get($key, 0);
-
-        if (!is_numeric($current)) {
-            return false;
-        }
-
-        $new = (int) $current + $value;
-        $this->set($key, $new);
-
-        return $new;
+        $this->validateKey($key);
+        return $this->store()->increment($key, $value);
     }
 
     /**
@@ -207,11 +256,12 @@ class CacheManager implements CacheInterface
      *
      * @param string $key Cache key
      * @param int $value Amount to decrement
-     * @return int|bool New value or false on failure
+     * @return int|false New value or false on failure
      */
-    public function decrement(string $key, int $value = 1): int|bool
+    public function decrement(string $key, int $value = 1): int|false
     {
-        return $this->increment($key, -$value);
+        $this->validateKey($key);
+        return $this->store()->decrement($key, $value);
     }
 
     /**
@@ -224,11 +274,21 @@ class CacheManager implements CacheInterface
      */
     public function add(string $key, mixed $value, int $ttl = 0): bool
     {
-        if ($this->has($key)) {
-            return false;
-        }
+        $this->validateKey($key);
+        return $this->store()->add($key, $value, $ttl);
+    }
 
-        return $this->set($key, $value, $ttl);
+    /**
+     * Store an item in the cache indefinitely
+     *
+     * @param string $key Cache key
+     * @param mixed $value Value to store
+     * @return bool True on success
+     */
+    public function forever(string $key, mixed $value): bool
+    {
+        $this->validateKey($key);
+        return $this->store()->set($key, $value, 0);
     }
 
     /**
@@ -236,8 +296,8 @@ class CacheManager implements CacheInterface
      */
     public function flush(): bool
     {
-        foreach ($this->stores as $store) {
-            $store->clear();
+        foreach (array_keys($this->config['stores'] ?? []) as $name) {
+            $this->store($name)->clear();
         }
 
         return true;

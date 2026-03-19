@@ -78,4 +78,32 @@ interface CacheInterface
      * @return bool True on success
      */
     public function deleteMultiple(array $keys): bool;
+
+    /**
+     * Add an item only if it doesn't already exist (atomic)
+     *
+     * @param string $key Cache key
+     * @param mixed $value Value to store
+     * @param int $ttl Time to live in seconds (0 = forever)
+     * @return bool True if added, false if already exists
+     */
+    public function add(string $key, mixed $value, int $ttl = 0): bool;
+
+    /**
+     * Atomically increment a numeric cache value
+     *
+     * @param string $key Cache key
+     * @param int $amount Amount to increment
+     * @return int|false New value or false on failure
+     */
+    public function increment(string $key, int $amount = 1): int|false;
+
+    /**
+     * Atomically decrement a numeric cache value
+     *
+     * @param string $key Cache key
+     * @param int $amount Amount to decrement
+     * @return int|false New value or false on failure
+     */
+    public function decrement(string $key, int $amount = 1): int|false;
 }

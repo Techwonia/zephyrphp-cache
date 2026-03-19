@@ -34,7 +34,10 @@ class RedisCacheDriver implements CacheInterface
                 // Authenticate if password provided
                 $password = $config['password'] ?? $_ENV['REDIS_PASSWORD'] ?? null;
                 if ($this->connected && $password) {
-                    $this->redis->auth($password);
+                    if (!$this->redis->auth($password)) {
+                        $this->connected = false;
+                        $this->redis = null;
+                    }
                 }
 
                 // Select database if specified
@@ -61,7 +64,7 @@ class RedisCacheDriver implements CacheInterface
             return $default;
         }
 
-        $decoded = @unserialize($value);
+        $decoded = @unserialize($value, ['allowed_classes' => false]);
         return $decoded !== false ? $decoded : $default;
     }
 
@@ -95,12 +98,14 @@ class RedisCacheDriver implements CacheInterface
             return false;
         }
 
-        // Delete only keys with our prefix
-        $keys = $this->redis->keys($this->prefix . '*');
-
-        if (!empty($keys)) {
-            $this->redis->del(...$keys);
-        }
+        // Delete only keys with our prefix using SCAN (non-blocking)
+        $iterator = null;
+        do {
+            $keys = $this->redis->scan($iterator, $this->prefix . '*', 100);
+            if ($keys !== false && !empty($keys)) {
+                $this->redis->del(...$keys);
+            }
+        } while ($iterator > 0);
 
         return true;
     }
@@ -130,7 +135,7 @@ class RedisCacheDriver implements CacheInterface
 
         foreach ($keys as $i => $key) {
             $value = $results[$i] ?? false;
-            $values[$key] = $value !== false ? @unserialize($value) : $default;
+            $values[$key] = $value !== false ? @unserialize($value, ['allowed_classes' => false]) : $default;
         }
 
         return $values;
@@ -161,6 +166,39 @@ class RedisCacheDriver implements CacheInterface
 
         $prefixedKeys = array_map(fn($k) => $this->prefix . $k, $keys);
         return $this->redis->del(...$prefixedKeys) > 0;
+    }
+
+    public function add(string $key, mixed $value, int $ttl = 0): bool
+    {
+        if (!$this->connected || !$this->redis) {
+            return false;
+        }
+
+        $prefixedKey = $this->prefix . $key;
+        $args = ['nx'];
+        if ($ttl > 0) {
+            $args['ex'] = $ttl;
+        }
+
+        return (bool) $this->redis->set($prefixedKey, serialize($value), $args);
+    }
+
+    public function increment(string $key, int $amount = 1): int|false
+    {
+        if (!$this->connected || !$this->redis) {
+            return false;
+        }
+
+        return $this->redis->incrBy($this->prefix . $key, $amount);
+    }
+
+    public function decrement(string $key, int $amount = 1): int|false
+    {
+        if (!$this->connected || !$this->redis) {
+            return false;
+        }
+
+        return $this->redis->decrBy($this->prefix . $key, $amount);
     }
 
     /**

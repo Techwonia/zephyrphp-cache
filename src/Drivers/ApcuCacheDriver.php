@@ -118,6 +118,33 @@ class ApcuCacheDriver implements CacheInterface
         return apcu_delete($prefixedKeys) !== false;
     }
 
+    public function add(string $key, mixed $value, int $ttl = 0): bool
+    {
+        if (!$this->available) {
+            return false;
+        }
+
+        return apcu_add($this->prefix . $key, $value, $ttl);
+    }
+
+    public function increment(string $key, int $amount = 1): int|false
+    {
+        if (!$this->available) {
+            return false;
+        }
+
+        return apcu_inc($this->prefix . $key, $amount);
+    }
+
+    public function decrement(string $key, int $amount = 1): int|false
+    {
+        if (!$this->available) {
+            return false;
+        }
+
+        return apcu_dec($this->prefix . $key, $amount);
+    }
+
     /**
      * Check if APCu is available
      */

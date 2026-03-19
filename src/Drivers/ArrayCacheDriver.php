@@ -88,6 +88,34 @@ class ArrayCacheDriver implements CacheInterface
         return true;
     }
 
+    public function add(string $key, mixed $value, int $ttl = 0): bool
+    {
+        if ($this->has($key)) {
+            return false;
+        }
+
+        return $this->set($key, $value, $ttl);
+    }
+
+    public function increment(string $key, int $amount = 1): int|false
+    {
+        $current = $this->get($key, 0);
+
+        if (!is_numeric($current)) {
+            return false;
+        }
+
+        $new = (int) $current + $amount;
+        $this->set($key, $new);
+
+        return $new;
+    }
+
+    public function decrement(string $key, int $amount = 1): int|false
+    {
+        return $this->increment($key, -$amount);
+    }
+
     /**
      * Get all cached keys
      */

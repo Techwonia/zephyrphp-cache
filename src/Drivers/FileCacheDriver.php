@@ -23,7 +23,7 @@ class FileCacheDriver implements CacheInterface
         $this->prefix = $config['prefix'] ?? 'cache_';
 
         if (!is_dir($this->path)) {
-            mkdir($this->path, 0755, true);
+            mkdir($this->path, 0700, true);
         }
     }
 
@@ -40,7 +40,7 @@ class FileCacheDriver implements CacheInterface
             return $default;
         }
 
-        $data = @unserialize($content);
+        $data = @unserialize($content, ['allowed_classes' => false]);
         if ($data === false) {
             unlink($file);
             return $default;
@@ -62,7 +62,17 @@ class FileCacheDriver implements CacheInterface
             'expires' => $ttl > 0 ? time() + $ttl : 0,
         ];
 
-        return file_put_contents($file, serialize($data), LOCK_EX) !== false;
+        $result = file_put_contents($file, serialize($data), LOCK_EX) !== false;
+        if ($result) {
+            @chmod($file, 0600);
+        }
+
+        // Probabilistic garbage collection (1 in 100 chance on each write)
+        if (random_int(1, 100) === 1) {
+            $this->gc();
+        }
+
+        return $result;
     }
 
     public function delete(string $key): bool
@@ -133,12 +143,108 @@ class FileCacheDriver implements CacheInterface
         return $success;
     }
 
+    public function add(string $key, mixed $value, int $ttl = 0): bool
+    {
+        $file = $this->getFilePath($key);
+
+        $handle = @fopen($file, 'c');
+        if ($handle === false) {
+            return false;
+        }
+
+        if (!flock($handle, LOCK_EX)) {
+            fclose($handle);
+            return false;
+        }
+
+        try {
+            // Check if file already has valid (non-expired) data
+            $stat = fstat($handle);
+            if ($stat['size'] > 0) {
+                $content = fread($handle, $stat['size']);
+                if ($content !== false) {
+                    $existing = @unserialize($content, ['allowed_classes' => false]);
+                    if ($existing !== false && ($existing['expires'] === 0 || $existing['expires'] >= time())) {
+                        return false; // Key already exists and is not expired
+                    }
+                }
+            }
+
+            // Write the new value
+            $data = [
+                'value' => $value,
+                'expires' => $ttl > 0 ? time() + $ttl : 0,
+            ];
+            ftruncate($handle, 0);
+            rewind($handle);
+            $result = fwrite($handle, serialize($data)) !== false;
+            if ($result) {
+                @chmod($file, 0600);
+            }
+            return $result;
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    public function increment(string $key, int $amount = 1): int|false
+    {
+        $file = $this->getFilePath($key);
+
+        $handle = @fopen($file, 'c+');
+        if ($handle === false) {
+            return false;
+        }
+
+        if (!flock($handle, LOCK_EX)) {
+            fclose($handle);
+            return false;
+        }
+
+        try {
+            $current = 0;
+            $expires = 0;
+            $stat = fstat($handle);
+            if ($stat['size'] > 0) {
+                $content = fread($handle, $stat['size']);
+                if ($content !== false) {
+                    $data = @unserialize($content, ['allowed_classes' => false]);
+                    if ($data !== false && ($data['expires'] === 0 || $data['expires'] >= time())) {
+                        if (!is_numeric($data['value'])) {
+                            return false;
+                        }
+                        $current = (int) $data['value'];
+                        $expires = $data['expires'];
+                    }
+                }
+            }
+
+            $new = $current + $amount;
+            ftruncate($handle, 0);
+            rewind($handle);
+            $result = fwrite($handle, serialize(['value' => $new, 'expires' => $expires]));
+            if ($result !== false) {
+                @chmod($file, 0600);
+            }
+            return $result !== false ? $new : false;
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    public function decrement(string $key, int $amount = 1): int|false
+    {
+        return $this->increment($key, -$amount);
+    }
+
     /**
      * Get the file path for a cache key
      */
     private function getFilePath(string $key): string
     {
-        return $this->path . '/' . $this->prefix . md5($key) . '.cache';
+        return $this->path . '/' . $this->prefix . hash('sha256', $key) . '.cache';
     }
 
     /**
@@ -159,7 +265,7 @@ class FileCacheDriver implements CacheInterface
                 continue;
             }
 
-            $data = @unserialize($content);
+            $data = @unserialize($content, ['allowed_classes' => false]);
             if ($data === false || ($data['expires'] !== 0 && $data['expires'] < time())) {
                 unlink($file);
                 $cleaned++;
