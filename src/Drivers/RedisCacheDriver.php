@@ -65,7 +65,7 @@ class RedisCacheDriver implements CacheInterface
         }
 
         $decoded = @unserialize($value, ['allowed_classes' => false]);
-        return $decoded !== false ? $decoded : $default;
+        return ($decoded !== false || $value === 'b:0;') ? $decoded : $default;
     }
 
     public function set(string $key, mixed $value, int $ttl = 0): bool
@@ -135,7 +135,12 @@ class RedisCacheDriver implements CacheInterface
 
         foreach ($keys as $i => $key) {
             $value = $results[$i] ?? false;
-            $values[$key] = $value !== false ? @unserialize($value, ['allowed_classes' => false]) : $default;
+            if ($value === false) {
+                $values[$key] = $default;
+            } else {
+                $decoded = @unserialize($value, ['allowed_classes' => false]);
+                $values[$key] = ($decoded !== false || $value === 'b:0;') ? $decoded : $default;
+            }
         }
 
         return $values;

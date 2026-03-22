@@ -194,18 +194,29 @@ class CacheManager implements CacheInterface
 
         // Use a lock key to mitigate cache stampede (thundering herd)
         $lockKey = $key . ':_lock';
+        $maxRetries = 10;
+        $retryDelay = 50000; // 50ms
+
         if ($this->has($lockKey)) {
-            usleep(50000); // 50ms wait for another process to finish
-            $value = $this->get($key);
-            if ($value !== null) {
-                return $value;
+            for ($i = 0; $i < $maxRetries; $i++) {
+                usleep($retryDelay);
+                $value = $this->get($key);
+                if ($value !== null) {
+                    return $value;
+                }
+                if (!$this->has($lockKey)) {
+                    break;
+                }
             }
         }
 
         $this->set($lockKey, '1', 30);
-        $value = $callback();
-        $this->set($key, $value, $ttl);
-        $this->delete($lockKey);
+        try {
+            $value = $callback();
+            $this->set($key, $value, $ttl);
+        } finally {
+            $this->delete($lockKey);
+        }
 
         return $value;
     }

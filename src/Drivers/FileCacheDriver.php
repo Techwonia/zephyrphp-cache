@@ -41,8 +41,8 @@ class FileCacheDriver implements CacheInterface
         }
 
         $data = @unserialize($content, ['allowed_classes' => false]);
-        if ($data === false) {
-            unlink($file);
+        if (!is_array($data) || !array_key_exists('value', $data) || !array_key_exists('expires', $data)) {
+            @unlink($file);
             return $default;
         }
 
@@ -164,7 +164,8 @@ class FileCacheDriver implements CacheInterface
                 $content = fread($handle, $stat['size']);
                 if ($content !== false) {
                     $existing = @unserialize($content, ['allowed_classes' => false]);
-                    if ($existing !== false && ($existing['expires'] === 0 || $existing['expires'] >= time())) {
+                    if (is_array($existing) && array_key_exists('value', $existing) && array_key_exists('expires', $existing)
+                        && ($existing['expires'] === 0 || $existing['expires'] >= time())) {
                         return false; // Key already exists and is not expired
                     }
                 }
@@ -210,7 +211,8 @@ class FileCacheDriver implements CacheInterface
                 $content = fread($handle, $stat['size']);
                 if ($content !== false) {
                     $data = @unserialize($content, ['allowed_classes' => false]);
-                    if ($data !== false && ($data['expires'] === 0 || $data['expires'] >= time())) {
+                    if (is_array($data) && array_key_exists('value', $data) && array_key_exists('expires', $data)
+                        && ($data['expires'] === 0 || $data['expires'] >= time())) {
                         if (!is_numeric($data['value'])) {
                             return false;
                         }
@@ -266,7 +268,7 @@ class FileCacheDriver implements CacheInterface
             }
 
             $data = @unserialize($content, ['allowed_classes' => false]);
-            if ($data === false || ($data['expires'] !== 0 && $data['expires'] < time())) {
+            if (!is_array($data) || !array_key_exists('expires', $data) || ($data['expires'] !== 0 && $data['expires'] < time())) {
                 unlink($file);
                 $cleaned++;
             }
