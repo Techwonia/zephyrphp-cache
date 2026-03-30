@@ -23,7 +23,10 @@ class FileCacheDriver implements CacheInterface
         $this->prefix = $config['prefix'] ?? 'cache_';
 
         if (!is_dir($this->path)) {
-            mkdir($this->path, 0700, true);
+            @mkdir($this->path, 0700, true);
+            if (!is_dir($this->path)) {
+                throw new \RuntimeException("Cache directory could not be created: {$this->path}");
+            }
         }
     }
 
